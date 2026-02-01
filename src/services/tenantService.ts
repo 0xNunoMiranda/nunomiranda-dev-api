@@ -1,13 +1,17 @@
-import { RowDataPacket } from 'mysql2';
+import { ResultSetHeader, RowDataPacket } from 'mysql2';
 import pool from '../db';
+
+type TenantStatus = 'active' | 'suspended';
 
 interface TenantRow extends RowDataPacket {
   id: number;
   name: string;
   slug: string;
-  status: string;
+  status: TenantStatus;
   default_context: string | null;
   metadata: string | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 interface TenantApiKeyRow extends RowDataPacket {
@@ -80,4 +84,120 @@ export const findTenantKeyByPublicId = async (publicId: string) => {
 export const findTenantById = async (tenantId: number) => {
   const [rows] = await pool.query<TenantRow[]>('SELECT * FROM tenants WHERE id = ?', [tenantId]);
   return rows[0];
+};
+
+export const listTenants = async () => {
+  const [rows] = await pool.query<TenantRow[]>(
+    'SELECT * FROM tenants ORDER BY created_at DESC LIMIT 200',
+  );
+  return rows;
+};
+
+export const updateTenantStatus = async (tenantId: number, status: TenantStatus) => {
+  const [result] = await pool.query<ResultSetHeader>('UPDATE tenants SET status = ? WHERE id = ?', [status, tenantId]);
+  if (result.affectedRows === 0) {
+    return null;
+  }
+  return findTenantById(tenantId);
+};
+
+interface RequestTotalsRow extends RowDataPacket {
+  total: number | null;
+  last24h: number | null;
+  last7d: number | null;
+}
+
+interface StatusBreakdownRow extends RowDataPacket {
+  status: string;
+  count: number;
+}
+
+interface RateWindowRow extends RowDataPacket {
+  window_start: Date;
+  window_seconds: number;
+  request_count: number;
+  updated_at: Date;
+}
+
+interface RateStatsRow extends RowDataPacket {
+  requests_today: number | null;
+  windows_today: number | null;
+}
+
+export type TenantUsageSummary = {
+  totals: { total: number; last24h: number; last7d: number };
+  statusBreakdown: Array<{ status: string; count: number }>;
+  rateLimiter: {
+    windows: Array<{
+      windowStart: string;
+      windowSeconds: number;
+      requestCount: number;
+      updatedAt: string;
+    }>;
+    today: { windows: number; requests: number };
+    latestResetAt: number | null;
+  };
+};
+
+export const getTenantUsageSummary = async (tenantId: number): Promise<TenantUsageSummary> => {
+  const [[totalsRow]] = await pool.query<RequestTotalsRow[]>(
+    `SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN created_at >= NOW() - INTERVAL 1 DAY THEN 1 ELSE 0 END) AS last24h,
+        SUM(CASE WHEN created_at >= NOW() - INTERVAL 7 DAY THEN 1 ELSE 0 END) AS last7d
+      FROM requests
+      WHERE tenant_id = ?`,
+    [tenantId],
+  );
+
+  const [statusRows] = await pool.query<StatusBreakdownRow[]>(
+    'SELECT status, COUNT(*) AS count FROM requests WHERE tenant_id = ? GROUP BY status ORDER BY count DESC',
+    [tenantId],
+  );
+
+  const [rateRows] = await pool.query<RateWindowRow[]>(
+    `SELECT window_start, window_seconds, request_count, updated_at
+     FROM tenant_rate_limit_windows
+     WHERE tenant_id = ?
+     ORDER BY window_start DESC
+     LIMIT 12`,
+    [tenantId],
+  );
+
+  const [[rateStats]] = await pool.query<RateStatsRow[]>(
+    `SELECT
+        COALESCE(SUM(request_count), 0) AS requests_today,
+        COUNT(*) AS windows_today
+      FROM tenant_rate_limit_windows
+      WHERE tenant_id = ?
+        AND DATE(window_start) = CURDATE()`,
+    [tenantId],
+  );
+
+  const latestWindow = rateRows[0];
+  const latestResetAt = latestWindow
+    ? Math.floor(latestWindow.window_start.getTime() / 1000) + latestWindow.window_seconds
+    : null;
+
+  return {
+    totals: {
+      total: totalsRow?.total ?? 0,
+      last24h: totalsRow?.last24h ?? 0,
+      last7d: totalsRow?.last7d ?? 0,
+    },
+    statusBreakdown: statusRows.map((row) => ({ status: row.status, count: row.count })),
+    rateLimiter: {
+      windows: rateRows.map((row) => ({
+        windowStart: row.window_start.toISOString(),
+        windowSeconds: row.window_seconds,
+        requestCount: row.request_count,
+        updatedAt: row.updated_at.toISOString(),
+      })),
+      today: {
+        windows: rateStats?.windows_today ?? 0,
+        requests: rateStats?.requests_today ?? 0,
+      },
+      latestResetAt,
+    },
+  };
 };

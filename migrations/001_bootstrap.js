@@ -1,11 +1,7 @@
-const fs = require('fs');
-const path = require('path');
-
-const schemaPath = path.resolve(__dirname, '../sql/bootstrap.sql');
+const applySchema = require('./helpers/applySchema');
 
 exports.up = async function up(knex) {
-  const sql = fs.readFileSync(schemaPath, 'utf8');
-  await knex.raw(sql);
+  await applySchema(knex, 'bootstrap.sql');
 };
 
 exports.down = async function down(knex) {

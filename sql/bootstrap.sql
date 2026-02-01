@@ -29,6 +29,29 @@ CREATE TABLE IF NOT EXISTS tenant_api_keys (
   INDEX idx_tenant_api_keys_revoked (revoked_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS subscription_plans (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  slug VARCHAR(120) NOT NULL UNIQUE,
+  description TEXT NULL,
+  billing_period ENUM('monthly', 'annual') NOT NULL DEFAULT 'monthly',
+  currency CHAR(3) NOT NULL DEFAULT 'EUR',
+  price_cents INT UNSIGNED NOT NULL,
+  setup_fee_cents INT UNSIGNED NOT NULL DEFAULT 0,
+  trial_days INT UNSIGNED NOT NULL DEFAULT 0,
+  modules_json LONGTEXT NULL,
+  features_json LONGTEXT NULL,
+  metadata LONGTEXT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  archived_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_subscription_plans_period (billing_period),
+  INDEX idx_subscription_plans_active (is_active),
+  INDEX idx_subscription_plans_archived (archived_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 DELIMITER $$
 
 DROP PROCEDURE IF EXISTS sp_create_tenant$$
@@ -88,6 +111,72 @@ BEGIN
   INNER JOIN tenants t ON t.id = k.tenant_id
   WHERE k.public_id = p_public_id
   LIMIT 1;
+END$$
+
+DELIMITER ;
+
+CREATE TABLE IF NOT EXISTS tenant_rate_limit_windows (
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  window_start DATETIME NOT NULL,
+  window_seconds INT UNSIGNED NOT NULL DEFAULT 60,
+  request_count INT UNSIGNED NOT NULL DEFAULT 0,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (tenant_id, window_start, window_seconds),
+  CONSTRAINT fk_rate_limit_tenant FOREIGN KEY (tenant_id) REFERENCES tenants (id)
+    ON DELETE CASCADE,
+  INDEX idx_rate_limit_window (window_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS sp_check_rate_limit$$
+CREATE PROCEDURE sp_check_rate_limit(
+  IN p_tenant_id BIGINT UNSIGNED,
+  IN p_window_seconds INT,
+  IN p_limit INT
+)
+rate_limit:BEGIN
+  DECLARE v_window_seconds INT;
+  DECLARE v_window_start DATETIME;
+  DECLARE v_reset_ts BIGINT;
+  DECLARE v_updated INT DEFAULT 0;
+  DECLARE v_current_count INT DEFAULT 0;
+  DECLARE v_limit INT;
+
+  SET v_limit = IF(p_limit IS NULL OR p_limit < 1, 1, p_limit);
+  SET v_window_seconds = IF(p_window_seconds IS NULL OR p_window_seconds < 1, 60, p_window_seconds);
+  SET v_window_start = FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP() / v_window_seconds) * v_window_seconds);
+  SET v_reset_ts = UNIX_TIMESTAMP(v_window_start) + v_window_seconds;
+
+  DELETE FROM tenant_rate_limit_windows
+  WHERE window_start < DATE_SUB(NOW(), INTERVAL 1 DAY);
+
+  INSERT IGNORE INTO tenant_rate_limit_windows (tenant_id, window_start, window_seconds, request_count, updated_at)
+  VALUES (p_tenant_id, v_window_start, v_window_seconds, 0, NOW());
+
+  UPDATE tenant_rate_limit_windows
+  SET request_count = request_count + 1,
+      updated_at = NOW()
+  WHERE tenant_id = p_tenant_id
+    AND window_start = v_window_start
+    AND window_seconds = v_window_seconds
+    AND request_count < v_limit;
+
+  SET v_updated = ROW_COUNT();
+
+  SELECT request_count INTO v_current_count
+  FROM tenant_rate_limit_windows
+  WHERE tenant_id = p_tenant_id
+    AND window_start = v_window_start
+    AND window_seconds = v_window_seconds
+  LIMIT 1;
+
+  IF v_updated = 0 THEN
+    SELECT 0 AS allowed, 0 AS remaining, v_reset_ts AS reset_at;
+    LEAVE rate_limit;
+  END IF;
+
+  SELECT 1 AS allowed, GREATEST(v_limit - v_current_count, 0) AS remaining, v_reset_ts AS reset_at;
 END$$
 
 DELIMITER ;
@@ -338,4 +427,142 @@ BEGIN
   SELECT * FROM requests WHERE id = p_request_id;
 END$$
 
+DROP PROCEDURE IF EXISTS sp_dashboard_summary$$
+CREATE PROCEDURE sp_dashboard_summary(
+  IN p_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT
+    COALESCE(SUM(CASE WHEN status IN ('new', 'pending') THEN 1 ELSE 0 END), 0) AS pending_count,
+    COALESCE(SUM(CASE WHEN preferred_date = CURDATE() AND status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END), 0) AS today_count,
+    COALESCE(SUM(CASE WHEN preferred_date = DATE_ADD(CURDATE(), INTERVAL 1 DAY) AND status NOT IN ('done', 'cancelled') THEN 1 ELSE 0 END), 0) AS tomorrow_count
+  FROM requests
+  WHERE tenant_id = p_tenant_id;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_dashboard_pending$$
+CREATE PROCEDURE sp_dashboard_pending(
+  IN p_tenant_id BIGINT UNSIGNED,
+  IN p_query VARCHAR(160),
+  IN p_limit INT
+)
+BEGIN
+  DECLARE v_limit INT DEFAULT 25;
+  SET v_limit = IFNULL(NULLIF(p_limit, 0), 25);
+  SET v_limit = LEAST(v_limit, 100);
+
+  SELECT *
+  FROM requests
+  WHERE tenant_id = p_tenant_id
+    AND status IN ('new', 'pending')
+    AND (
+      p_query IS NULL
+      OR customer_name LIKE CONCAT('%', p_query, '%')
+      OR customer_phone LIKE CONCAT('%', p_query, '%')
+    )
+  ORDER BY created_at ASC
+  LIMIT v_limit;
+END$$
+
+DROP PROCEDURE IF EXISTS sp_dashboard_by_date$$
+CREATE PROCEDURE sp_dashboard_by_date(
+  IN p_tenant_id BIGINT UNSIGNED,
+  IN p_target_date DATE,
+  IN p_query VARCHAR(160),
+  IN p_limit INT
+)
+BEGIN
+  DECLARE v_limit INT DEFAULT 25;
+  SET v_limit = IFNULL(NULLIF(p_limit, 0), 25);
+  SET v_limit = LEAST(v_limit, 100);
+
+  SELECT *
+  FROM requests
+  WHERE tenant_id = p_tenant_id
+    AND preferred_date = p_target_date
+    AND status NOT IN ('done', 'cancelled')
+    AND (
+      p_query IS NULL
+      OR customer_name LIKE CONCAT('%', p_query, '%')
+      OR customer_phone LIKE CONCAT('%', p_query, '%')
+    )
+  ORDER BY preferred_time IS NULL, preferred_time ASC, created_at ASC
+  LIMIT v_limit;
+END$$
+
 DELIMITER ;
+
+-- Billing / Easypay Integration Tables
+
+CREATE TABLE IF NOT EXISTS tenant_subscriptions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  plan_id BIGINT UNSIGNED NOT NULL,
+  easypay_subscription_id VARCHAR(64) NULL UNIQUE,
+  easypay_frequent_id VARCHAR(64) NULL,
+  status ENUM('pending', 'active', 'paused', 'cancelled', 'expired', 'failed') NOT NULL DEFAULT 'pending',
+  payment_method ENUM('cc', 'dd', 'mbway', 'multibanco', 'google_pay', 'apple_pay') NOT NULL,
+  billing_period ENUM('monthly', 'annual') NOT NULL DEFAULT 'monthly',
+  currency CHAR(3) NOT NULL DEFAULT 'EUR',
+  amount_cents INT UNSIGNED NOT NULL,
+  next_billing_at DATETIME NULL,
+  trial_ends_at DATETIME NULL,
+  started_at DATETIME NULL,
+  cancelled_at DATETIME NULL,
+  expires_at DATETIME NULL,
+  customer_name VARCHAR(160) NULL,
+  customer_email VARCHAR(200) NULL,
+  customer_phone VARCHAR(32) NULL,
+  customer_fiscal_number VARCHAR(32) NULL,
+  sdd_iban VARCHAR(64) NULL,
+  sdd_mandate_id VARCHAR(64) NULL,
+  metadata LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_tenant_subscriptions_tenant FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+  CONSTRAINT fk_tenant_subscriptions_plan FOREIGN KEY (plan_id) REFERENCES subscription_plans (id) ON DELETE RESTRICT,
+  INDEX idx_tenant_subscriptions_tenant (tenant_id),
+  INDEX idx_tenant_subscriptions_status (status),
+  INDEX idx_tenant_subscriptions_next_billing (next_billing_at),
+  INDEX idx_tenant_subscriptions_easypay (easypay_subscription_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS subscription_charges (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  subscription_id BIGINT UNSIGNED NOT NULL,
+  tenant_id BIGINT UNSIGNED NOT NULL,
+  easypay_transaction_id VARCHAR(64) NULL UNIQUE,
+  easypay_capture_id VARCHAR(64) NULL,
+  status ENUM('pending', 'processing', 'paid', 'failed', 'refunded', 'cancelled') NOT NULL DEFAULT 'pending',
+  payment_method ENUM('cc', 'dd', 'mbway', 'multibanco', 'google_pay', 'apple_pay') NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'EUR',
+  amount_cents INT UNSIGNED NOT NULL,
+  paid_at DATETIME NULL,
+  failed_at DATETIME NULL,
+  failure_reason VARCHAR(255) NULL,
+  mb_entity VARCHAR(10) NULL,
+  mb_reference VARCHAR(20) NULL,
+  mb_expires_at DATETIME NULL,
+  metadata LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_subscription_charges_subscription FOREIGN KEY (subscription_id) REFERENCES tenant_subscriptions (id) ON DELETE CASCADE,
+  CONSTRAINT fk_subscription_charges_tenant FOREIGN KEY (tenant_id) REFERENCES tenants (id) ON DELETE CASCADE,
+  INDEX idx_subscription_charges_subscription (subscription_id),
+  INDEX idx_subscription_charges_tenant (tenant_id),
+  INDEX idx_subscription_charges_status (status),
+  INDEX idx_subscription_charges_easypay (easypay_transaction_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS easypay_webhooks (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  event_type VARCHAR(64) NOT NULL,
+  easypay_id VARCHAR(64) NULL,
+  payload LONGTEXT NOT NULL,
+  processed_at DATETIME NULL,
+  error_message TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_easypay_webhooks_type (event_type),
+  INDEX idx_easypay_webhooks_easypay_id (easypay_id),
+  INDEX idx_easypay_webhooks_processed (processed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

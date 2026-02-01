@@ -1,14 +1,21 @@
 import express from 'express';
+import path from 'path';
 import pinoHttp from 'pino-http';
 import config from './config';
 import logger from './logger';
 import errorHandler from './middleware/errorHandler';
 import { success } from './responses';
 import adminRoutes from './routes/admin';
+import dashboardRoutes from './routes/dashboard';
 import requestRoutes from './routes/requests';
 import tenantRoutes from './routes/tenant';
+import catalogRoutes from './routes/catalog';
+import billingRoutes from './routes/billing';
+import clientRoutes from './routes/client';
 
 const app = express();
+
+const adminUiDir = path.resolve(process.cwd(), 'public', 'admin');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -36,8 +43,13 @@ app.get('/version', (_req, res) => {
   );
 });
 
+app.use('/admin/ui', express.static(adminUiDir));
 app.use('/admin', adminRoutes);
 app.use('/requests', requestRoutes);
+app.use('/dashboard', dashboardRoutes);
+app.use('/catalog', catalogRoutes);
+app.use('/billing', billingRoutes);
+app.use('/api', clientRoutes);
 app.use('/', tenantRoutes);
 
 app.use(errorHandler);

@@ -1,5 +1,5 @@
-import { OkPacket, ResultSetHeader, RowDataPacket } from 'mysql2';
-import pool from '../db';
+import { RowDataPacket } from 'mysql2';
+import { callProcedure } from './procedure';
 
 export type CreateRequestInput = {
   tenantId: number;
@@ -58,23 +58,6 @@ interface RequestEventRow extends RowDataPacket {
   created_by: string | null;
   created_at: Date;
 }
-
-type ProcedureResult = RowDataPacket[][] | RowDataPacket[] | OkPacket | OkPacket[] | ResultSetHeader;
-
-const isOkPacketArray = (value: unknown): value is OkPacket[] =>
-  Array.isArray(value) && value.length > 0 && Object.prototype.hasOwnProperty.call(value[0], 'affectedRows');
-
-const callProcedure = async <TRow extends RowDataPacket>(sql: string, params: unknown[]) => {
-  const [resultSets] = await pool.query<ProcedureResult>(sql, params);
-  const sets = Array.isArray(resultSets) ? resultSets : [resultSets];
-  for (let i = sets.length - 1; i >= 0; i -= 1) {
-    const rows = sets[i];
-    if (Array.isArray(rows) && !isOkPacketArray(rows)) {
-      return rows as TRow[];
-    }
-  }
-  return [] as TRow[];
-};
 
 export const createRequest = async (input: CreateRequestInput) => {
   const rows = await callProcedure<RequestRow>('CALL sp_create_request(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Console Administrativa · Multi-tenant API</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="background-texture" aria-hidden="true"></div>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Console Administrativa</p>
+          <h1>Orquestra clientes e consumo de aditivos num só lugar.</h1>
+          <p class="lede">
+            Controla tenants, gera chaves de acesso e acompanha o consumo de aditivos (rate limit) em tempo real.
+          </p>
+        </div>
+        <form id="secret-form" class="secret-form" autocomplete="off">
+          <label for="admin-secret">Segredo administrativo</label>
+          <div class="secret-input-row">
+            <input id="admin-secret" name="admin-secret" type="password" placeholder="••••••" required />
+            <button type="submit">Guardar</button>
+          </div>
+          <small>Guardamos localmente para esta sessão.</small>
+        </form>
+      </header>
+
+      <main class="layout">
+        <section class="panel" aria-labelledby="tenants-title">
+          <header class="panel-header">
+            <div>
+              <p class="eyebrow">Clientes</p>
+              <h2 id="tenants-title">Gestão de tenants</h2>
+            </div>
+            <div class="panel-actions">
+              <button id="refresh-tenants" type="button">Atualizar lista</button>
+            </div>
+          </header>
+
+          <form id="create-tenant-form" class="stack" autocomplete="off">
+            <div class="form-grid">
+              <label>
+                Nome
+                <input name="name" type="text" minlength="3" required />
+              </label>
+              <label>
+                Slug
+                <input name="slug" type="text" pattern="[a-z0-9-]+" required />
+              </label>
+              <label>
+                Contexto por defeito
+                <input name="defaultContext" type="text" placeholder="ex: pt-pt" />
+              </label>
+            </div>
+            <label>
+              Metadata (JSON)
+              <textarea name="metadata" rows="2" placeholder='{"plan":"pro"}'></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="submit">Criar cliente</button>
+            </div>
+          </form>
+
+          <div id="tenant-list" class="tenant-list" role="list"></div>
+        </section>
+
+        <section class="panel" aria-labelledby="usage-title">
+          <header class="panel-header">
+            <div>
+              <p class="eyebrow">Consumo de aditivos</p>
+              <h2 id="usage-title">Detalhes do cliente</h2>
+            </div>
+            <div class="panel-actions">
+              <button id="toggle-status" type="button" disabled>Alterar estado</button>
+            </div>
+          </header>
+
+          <div id="usage-empty" class="empty-state">
+            <p>Seleciona um cliente para veres atividade, quotas e rate limit.</p>
+          </div>
+
+          <div id="usage-content" class="usage" hidden>
+            <div class="usage-summary">
+              <article>
+                <h3>Total pedidos</h3>
+                <p id="total-requests" class="stat">0</p>
+                <small>Últimas 24h: <span id="requests-24h">0</span> · 7 dias: <span id="requests-7d">0</span></small>
+              </article>
+              <article>
+                <h3>Janelas de aditivos</h3>
+                <p class="stat"><span id="windows-today">0</span> janelas</p>
+                <small>Pedidos hoje: <span id="requests-today">0</span></small>
+              </article>
+              <article>
+                <h3>Estado atual</h3>
+                <p id="tenant-status" class="stat status-pill">—</p>
+                <small>Reset da janela: <span id="rate-reset">—</span></small>
+              </article>
+            </div>
+
+            <div class="usage-grid">
+              <div>
+                <h4>Distribuição por estado</h4>
+                <ul id="status-breakdown" class="status-list"></ul>
+              </div>
+              <div>
+                <h4>Últimas janelas de rate limit</h4>
+                <div class="table-like" id="rate-windows"></div>
+              </div>
+            </div>
+
+            <section class="stack">
+              <h4>Gerar nova chave API</h4>
+              <form id="create-key-form" class="inline-form" autocomplete="off">
+                <label>
+                  Label
+                  <input name="label" type="text" placeholder="Backoffice" />
+                </label>
+                <label>
+                  Scopes (separados por vírgulas)
+                  <input name="scopes" type="text" placeholder="requests:read,requests:write" />
+                </label>
+                <button type="submit">Gerar</button>
+              </form>
+              <p id="api-key-result" class="key-result" hidden></p>
+            </section>
+          </div>
+        </section>
+
+        <!-- Subscription Plans Section -->
+        <section class="panel" aria-labelledby="plans-title" style="grid-column: 1 / -1;">
+          <header class="panel-header">
+            <div>
+              <p class="eyebrow">Faturação</p>
+              <h2 id="plans-title">Planos de Subscrição</h2>
+            </div>
+            <div class="panel-actions">
+              <button id="refresh-plans" type="button">Atualizar</button>
+            </div>
+          </header>
+
+          <form id="create-plan-form" class="stack" autocomplete="off">
+            <div class="form-grid">
+              <label>
+                Nome do plano *
+                <input name="name" type="text" minlength="3" required placeholder="Pro Mensal" />
+              </label>
+              <label>
+                Preço (cêntimos) *
+                <input name="priceCents" type="number" min="0" required placeholder="1990" />
+              </label>
+              <label>
+                Período *
+                <select name="billingPeriod" required>
+                  <option value="monthly">Mensal</option>
+                  <option value="annual">Anual</option>
+                </select>
+              </label>
+              <label>
+                Dias de trial
+                <input name="trialDays" type="number" min="0" value="0" />
+              </label>
+            </div>
+            <label>
+              Descrição
+              <textarea name="description" rows="2" placeholder="Acesso completo a todas as funcionalidades"></textarea>
+            </label>
+            <label>
+              Features (uma por linha)
+              <textarea name="features" rows="3" placeholder="Bot AI ilimitado&#10;WhatsApp integration&#10;Suporte prioritário"></textarea>
+            </label>
+            <div class="form-actions">
+              <button type="submit">Criar plano</button>
+            </div>
+          </form>
+
+          <div id="plans-list" class="plans-grid" role="list"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

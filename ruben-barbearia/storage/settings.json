@@ -1,0 +1,21 @@
+{
+  "branding": {
+    "headline": "Barbearia Rubin — precisão artesanal",
+    "subheadline": "Agenda aberta 7 dias por semana. O nosso bot responde em segundos e confirma o melhor horário para ti.",
+    "ctaText": "Marcar corte agora",
+    "ctaLink": "#marcacoes"
+  },
+  "ai_bot": {
+    "enabled": true,
+    "assistantName": "Mestre Ruben",
+    "welcomeMessage": "Olá! Sou o assistente virtual da Barbearia Ruben. Fala comigo para encontrar o horário perfeito.",
+    "apiKey": "",
+    "preferredChannel": "site"
+  },
+  "whatsapp": {
+    "enabled": true,
+    "number": "+351 910 000 000",
+    "webhookUrl": "",
+    "greeting": "Olá! Já viste os nossos horários especiais para clientes frequentes?"
+  }
+}
