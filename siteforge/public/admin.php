@@ -15,6 +15,8 @@ $isAuthenticated = isset($_SESSION['sf_admin_authenticated']) && $_SESSION['sf_a
 $feedback = null;
 $feedbackType = 'info';
 $plans = [];
+$whatsappConnect = null;
+$whatsappStatus = null;
 
 if (isset($_GET['logout'])) {
     session_destroy();
@@ -43,6 +45,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $feedbackType = 'error';
         }
     } elseif ($formType === 'settings' && $isAuthenticated) {
+        $faqsParsed = null;
+        $productsParsed = null;
+
+        // These fields are only posted from the "Conteúdo" tab. If present, allow empty value to clear.
+        if (array_key_exists('faqs_json', $_POST)) {
+            $faqsJson = trim((string)($_POST['faqs_json'] ?? ''));
+            if ($faqsJson === '') {
+                $faqsParsed = [];
+            } else {
+                $decoded = json_decode($faqsJson, true);
+                if (!is_array($decoded)) {
+                    $feedback = 'FAQs: JSON inválido (deve ser um array).';
+                    $feedbackType = 'error';
+                } else {
+                    $faqsParsed = array_values(array_filter(array_map(function ($item) {
+                        if (!is_array($item)) return null;
+                        $q = trim((string)($item['question'] ?? ''));
+                        $a = trim((string)($item['answer'] ?? ''));
+                        if ($q === '' || $a === '') return null;
+                        return ['question' => $q, 'answer' => $a];
+                    }, $decoded)));
+                }
+            }
+        }
+
+        if (array_key_exists('shop_products_json', $_POST)) {
+            $productsJson = trim((string)($_POST['shop_products_json'] ?? ''));
+            if ($productsJson === '') {
+                $productsParsed = [];
+            } else {
+                $decoded = json_decode($productsJson, true);
+                if (!is_array($decoded)) {
+                    $feedback = 'Produtos: JSON inválido (deve ser um array).';
+                    $feedbackType = 'error';
+                } else {
+                    $productsParsed = array_values(array_filter(array_map(function ($item) {
+                        if (!is_array($item)) return null;
+                        $name = trim((string)($item['name'] ?? ''));
+                        if ($name === '') return null;
+                        return [
+                            'name' => $name,
+                            'price' => trim((string)($item['price'] ?? '')),
+                            'description' => trim((string)($item['description'] ?? '')),
+                            'url' => trim((string)($item['url'] ?? '')),
+                        ];
+                    }, $decoded)));
+                }
+            }
+        }
+
         $updates = [
             'branding' => [
                 'headline' => trim($_POST['headline'] ?? ''),
@@ -62,13 +114,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'number' => trim($_POST['wa_number'] ?? ''),
                 'webhookUrl' => trim($_POST['wa_webhook'] ?? ''),
                 'greeting' => trim($_POST['wa_greeting'] ?? ''),
+                'messagesPerMinute' => max(1, min(5, (int)($_POST['wa_messages_per_minute'] ?? 5))),
+                'promptTemplate' => trim($_POST['wa_prompt'] ?? ''),
+                'tags' => [
+                    'bookings' => bool_from_post($_POST['wa_tag_bookings'] ?? null),
+                    'faqs' => bool_from_post($_POST['wa_tag_faqs'] ?? null),
+                    'shop' => bool_from_post($_POST['wa_tag_shop'] ?? null),
+                ],
             ],
         ];
 
-        $settings = merge_settings($settings, $updates);
-        $settingsStore->save($settings);
-        $feedback = 'Configurações atualizadas.';
-        $feedbackType = 'success';
+        if ($faqsParsed !== null) {
+            $updates['faqs'] = [
+                'items' => $faqsParsed,
+            ];
+        }
+
+        if ($productsParsed !== null) {
+            $updates['shop'] = [
+                'products' => $productsParsed,
+            ];
+        }
+
+        if ($feedbackType !== 'error') {
+            $settings = merge_settings($settings, $updates);
+            $settingsStore->save($settings);
+            $feedback = 'Configurações atualizadas.';
+            $feedbackType = 'success';
+        }
+    } elseif ($formType === 'whatsapp_connect' && $isAuthenticated) {
+        $whatsappCfg = $settings['whatsapp'] ?? [];
+        $messagesPerMinute = (int)($whatsappCfg['messagesPerMinute'] ?? 5);
+        $messagesPerMinute = max(1, min(5, $messagesPerMinute));
+
+        $tags = $whatsappCfg['tags'] ?? [];
+        $scriptName = $_SERVER['SCRIPT_NAME'] ?? '/';
+        $scriptDir = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $siteUrl = trim((string)($config['site_url'] ?? ''));
+        if ($siteUrl === '') {
+            $siteUrl = $scheme . '://' . $host . $scriptDir;
+        }
+        $siteUrl = rtrim($siteUrl, '/');
+
+        $payload = [
+            'siteUrl' => $siteUrl,
+            'messagesPerMinute' => $messagesPerMinute,
+            'promptTemplate' => (string)($whatsappCfg['promptTemplate'] ?? ''),
+            'tags' => [
+                'bookings' => (bool)($tags['bookings'] ?? true),
+                'faqs' => (bool)($tags['faqs'] ?? true),
+                'shop' => (bool)($tags['shop'] ?? true),
+            ],
+        ];
+
+        $resp = $apiClient->post('/whatsapp/connect', $payload);
+        if ($resp['ok']) {
+            $whatsappConnect = $resp['data']['data'] ?? null;
+            $state = is_array($whatsappConnect) ? ($whatsappConnect['state'] ?? null) : null;
+            if ($state === 'error') {
+                $err = is_array($whatsappConnect) ? ($whatsappConnect['lastError'] ?? null) : null;
+                $feedback = 'Falha ao iniciar WhatsApp (estado=error).' . ($err ? (' Erro: ' . $err) : '');
+                $feedbackType = 'error';
+            } else {
+                $feedback = 'A ligar ao WhatsApp. Se aparecer um QR, lê-o com o teu telemóvel.';
+                $feedbackType = 'success';
+            }
+        } else {
+            $feedback = 'Falha ao iniciar ligaÃ§Ã£o WhatsApp: ' . ($resp['error'] ?? 'Erro desconhecido');
+            $feedbackType = 'error';
+        }
+    } elseif ($formType === 'whatsapp_disconnect' && $isAuthenticated) {
+        $resp = $apiClient->post('/whatsapp/disconnect', []);
+        if ($resp['ok']) {
+            $feedback = 'SessÃ£o WhatsApp terminada.';
+            $feedbackType = 'success';
+        } else {
+            $feedback = 'Falha ao desligar WhatsApp: ' . ($resp['error'] ?? 'Erro desconhecido');
+            $feedbackType = 'error';
+        }
     } elseif ($formType === 'select_plan' && $isAuthenticated) {
         $selectedPlanId = (int) ($_POST['plan_id'] ?? 0);
         $paymentMethod = trim($_POST['payment_method'] ?? 'multibanco');
@@ -181,8 +306,22 @@ function merge_settings(array $base, array $updates): array {
 $branding = $settings['branding'] ?? [];
 $aiBot = $settings['ai_bot'] ?? [];
 $whatsapp = $settings['whatsapp'] ?? [];
+$faqs = $settings['faqs']['items'] ?? [];
+$shopProducts = $settings['shop']['products'] ?? [];
 $subscription = $settings['subscription'] ?? [];
 $tenantName = $config['tenant']['name'] ?? 'SiteForge';
+
+$faqsJsonValue = json_encode(array_values(is_array($faqs) ? $faqs : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+if ($faqsJsonValue === false) $faqsJsonValue = "[]";
+$shopProductsJsonValue = json_encode(array_values(is_array($shopProducts) ? $shopProducts : []), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+if ($shopProductsJsonValue === false) $shopProductsJsonValue = "[]";
+
+if ($isAuthenticated) {
+    $statusResp = $apiClient->get('/whatsapp/status');
+    if ($statusResp['ok']) {
+        $whatsappStatus = $statusResp['data']['data']['status'] ?? null;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt">
@@ -481,6 +620,7 @@ $tenantName = $config['tenant']['name'] ?? 'SiteForge';
             <button class="nav-tab active" data-tab="branding">Branding</button>
             <button class="nav-tab" data-tab="bot">Bot AI</button>
             <button class="nav-tab" data-tab="whatsapp">WhatsApp</button>
+            <button class="nav-tab" data-tab="knowledge">Conteúdo</button>
             <button class="nav-tab" data-tab="subscription">Subscrição</button>
         </div>
         
@@ -510,7 +650,7 @@ $tenantName = $config['tenant']['name'] ?? 'SiteForge';
                         <label>Link do CTA</label>
                         <input type="url" name="ctaLink" value="<?= htmlspecialchars($branding['ctaLink'] ?? '') ?>">
                     </div>
-                    
+
                     <button type="submit" class="btn">Guardar</button>
                 </form>
             </div>
@@ -582,7 +722,123 @@ $tenantName = $config['tenant']['name'] ?? 'SiteForge';
                         <label>Mensagem de Saudação</label>
                         <textarea name="wa_greeting"><?= htmlspecialchars($whatsapp['greeting'] ?? '') ?></textarea>
                     </div>
+
+                    <div class="form-group">
+                        <label>Mensagens por minuto (máx 5)</label>
+                        <input
+                            type="number"
+                            name="wa_messages_per_minute"
+                            min="1"
+                            max="5"
+                            value="<?= htmlspecialchars((string)($whatsapp['messagesPerMinute'] ?? 5)) ?>"
+                        >
+                        <small style="display:block; color: var(--text-muted); margin-top: 6px;">
+                            Limite aplicado ao envio via WhatsApp (proteção anti-spam).
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Prompt do WhatsApp</label>
+                        <textarea name="wa_prompt" placeholder="Ex: És o assistente do negócio. Usa as tags quando fizer sentido..."><?= htmlspecialchars($whatsapp['promptTemplate'] ?? '') ?></textarea>
+                        <small style="display:block; color: var(--text-muted); margin-top: 6px;">
+                            Tags disponíveis: <code>{{bookings}}</code>, <code>{{faqs}}</code>, <code>{{shop}}</code>.
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Tags ativas</label>
+                        <div style="display:flex; gap: 14px; flex-wrap: wrap;">
+                            <label style="display:flex; align-items:center; gap: 8px;">
+                                <input type="checkbox" name="wa_tag_bookings" value="1" <?= (($whatsapp['tags']['bookings'] ?? true) ? 'checked' : '') ?>>
+                                <span>Marcações</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap: 8px;">
+                                <input type="checkbox" name="wa_tag_faqs" value="1" <?= (($whatsapp['tags']['faqs'] ?? true) ? 'checked' : '') ?>>
+                                <span>FAQs</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap: 8px;">
+                                <input type="checkbox" name="wa_tag_shop" value="1" <?= (($whatsapp['tags']['shop'] ?? true) ? 'checked' : '') ?>>
+                                <span>Vendas online</span>
+                            </label>
+                        </div>
+                    </div>
                     
+                    <button type="submit" class="btn">Guardar</button>
+                </form>
+            </div>
+
+            <div class="card" style="margin-top: 18px;">
+                <h3 style="margin-bottom: 10px;">Conexão (QR Code)</h3>
+
+                <?php $status = $whatsappStatus['state'] ?? 'disconnected'; ?>
+                <p style="color: var(--text-muted); margin-bottom: 12px;">
+                    Estado: <strong style="color: var(--text);"><?= htmlspecialchars((string)$status) ?></strong>
+                    <?php if (!empty($whatsappStatus['deviceJid'])): ?>
+                        <br><small>Dispositivo: <?= htmlspecialchars((string)$whatsappStatus['deviceJid']) ?></small>
+                    <?php endif; ?>
+                    <?php if (!empty($whatsappStatus['lastError'])): ?>
+                        <br><small style="color: rgba(244,67,54,0.9);">Erro: <?= htmlspecialchars((string)$whatsappStatus['lastError']) ?></small>
+                    <?php endif; ?>
+                </p>
+
+                <?php
+                    $qrDataUrl = is_array($whatsappConnect) ? ($whatsappConnect['qrDataUrl'] ?? null) : null;
+                    $qrRaw = is_array($whatsappConnect) ? ($whatsappConnect['qr'] ?? null) : null;
+                    if (!$qrDataUrl && is_array($whatsappStatus) && !empty($whatsappStatus['lastQr'])) {
+                        $qrRaw = $whatsappStatus['lastQr'];
+                    }
+                ?>
+
+                <?php if ($qrDataUrl): ?>
+                    <div style="display:flex; justify-content:center; margin: 12px 0;">
+                        <img src="<?= htmlspecialchars((string)$qrDataUrl) ?>" alt="QR Code WhatsApp" style="background:#fff; padding: 10px; border-radius: 12px; width: 280px; height: 280px;">
+                    </div>
+                <?php elseif ($qrRaw): ?>
+                    <p style="color: var(--text-muted);">
+                        QR disponível mas o servidor Node.js não conseguiu gerar imagem. Instala <code>qrcode</code> no Node e tenta de novo.
+                    </p>
+                    <pre style="white-space: pre-wrap; word-break: break-all; background: var(--bg-input); padding: 12px; border-radius: 10px;"><?= htmlspecialchars((string)$qrRaw) ?></pre>
+                <?php endif; ?>
+
+                <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                    <form method="POST" style="margin:0;">
+                        <input type="hidden" name="form" value="whatsapp_connect">
+                        <button type="submit" class="btn">Gerar QR / Ligar</button>
+                    </form>
+                    <form method="POST" style="margin:0;">
+                        <input type="hidden" name="form" value="whatsapp_disconnect">
+                        <button type="submit" class="btn" style="background: rgba(244,67,54,0.15); border-color: rgba(244,67,54,0.4);">Desligar</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Conteúdo -->
+        <div class="tab-content" id="tab-knowledge">
+            <div class="card">
+                <h2>📚 Conteúdo</h2>
+                <p style="color: var(--text-muted); margin-bottom: 14px;">
+                    Estes dados alimentam as tags <code>{{faqs}}</code> e <code>{{shop}}</code> no WhatsApp.
+                </p>
+                <form method="POST">
+                    <input type="hidden" name="form" value="settings">
+
+                    <div class="form-group">
+                        <label>FAQs (JSON)</label>
+                        <textarea name="faqs_json" style="min-height: 240px;" placeholder='[{"question":"...","answer":"..."}]'><?= htmlspecialchars($faqsJsonValue) ?></textarea>
+                        <small style="display:block; color: var(--text-muted); margin-top: 6px;">
+                            Formato: array de itens com <code>question</code> e <code>answer</code>. Deixa vazio e guarda para limpar.
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Produtos (JSON)</label>
+                        <textarea name="shop_products_json" style="min-height: 240px;" placeholder='[{"name":"Produto","price":"10.00€","description":"","url":""}]'><?= htmlspecialchars($shopProductsJsonValue) ?></textarea>
+                        <small style="display:block; color: var(--text-muted); margin-top: 6px;">
+                            Formato: array de itens com <code>name</code>, <code>price</code>, <code>description</code>, <code>url</code>. Deixa vazio e guarda para limpar.
+                        </small>
+                    </div>
+
                     <button type="submit" class="btn">Guardar</button>
                 </form>
             </div>

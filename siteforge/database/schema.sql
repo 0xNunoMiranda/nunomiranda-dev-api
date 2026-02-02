@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   ip_address VARCHAR(45),
   user_agent TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  expires_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP NULL DEFAULT NULL,
   INDEX idx_token (session_token),
   INDEX idx_expires (expires_at)
 ) ENGINE=InnoDB;

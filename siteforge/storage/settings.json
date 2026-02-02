@@ -1,21 +1,28 @@
 {
-  "branding": {
-    "headline": "",
-    "subheadline": "",
-    "ctaText": "Saber Mais",
-    "ctaLink": "#contact"
-  },
-  "ai_bot": {
-    "enabled": false,
-    "assistantName": "Assistente",
-    "welcomeMessage": "Olá! Como posso ajudar?",
-    "apiKey": "",
-    "preferredChannel": "site"
-  },
-  "whatsapp": {
-    "enabled": false,
-    "number": "",
-    "webhookUrl": "",
-    "greeting": "Olá! Em que posso ajudar?"
-  }
+    "branding": {
+        "headline": "",
+        "subheadline": "",
+        "ctaText": "",
+        "ctaLink": ""
+    },
+    "ai_bot": {
+        "enabled": false,
+        "assistantName": "",
+        "welcomeMessage": "",
+        "apiKey": "",
+        "preferredChannel": "site"
+    },
+    "whatsapp": {
+        "enabled": true,
+        "number": "+351935120439",
+        "webhookUrl": "",
+        "greeting": "olá",
+        "messagesPerMinute": 5,
+        "promptTemplate": "",
+        "tags": {
+            "bookings": false,
+            "faqs": false,
+            "shop": false
+        }
+    }
 }

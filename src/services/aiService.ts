@@ -65,6 +65,7 @@ export class AIService {
             model?: string;
             maxTokens?: number;
             temperature?: number;
+            module?: keyof ModulesConfig;
         }
     ): Promise<GenerationResult> {
         // Verificar se OpenAI está configurado
@@ -74,7 +75,8 @@ export class AIService {
         }
 
         // Validar licença
-        const validation = await LicenseService.validateLicense(licenseKey, 'bot_widget');
+        const moduleName = options?.module || 'bot_widget';
+        const validation = await LicenseService.validateLicense(licenseKey, moduleName);
         if (!validation.valid) {
             return { success: false, error: validation.error };
         }

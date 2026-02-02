@@ -26,8 +26,7 @@ $totalSteps = 8;
 $error = '';
 $success = '';
 
-// Regex para validar formato da chave: ntk_xxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-define('LICENSE_KEY_PATTERN', '/^ntk_[a-f0-9]{12}\.[a-f0-9]{48}$/');
+// Nota: a validação da chave é feita pela API (Node.js). Aqui apenas normalizamos o input.
 
 // Processar formulários
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -45,16 +44,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
         case 'validate_license':
             $licenseKey = trim($_POST['license_key'] ?? '');
+            // Normalizar: remover espaços/linhas e aceitar hex em maiúsculas
+            $licenseKey = preg_replace('/\s+/', '', $licenseKey);
+            $licenseKey = strtolower($licenseKey);
             $apiUrl = trim($_POST['api_url'] ?? 'http://localhost:3000');
             
             if (empty($licenseKey)) {
                 $error = 'Introduz a chave de licença fornecida.';
-                break;
-            }
-            
-            // Validar formato da chave
-            if (!preg_match(LICENSE_KEY_PATTERN, $licenseKey)) {
-                $error = 'Formato de chave inválido. O formato deve ser: ntk_xxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
                 break;
             }
             

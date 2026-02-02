@@ -333,6 +333,12 @@ button:not(:disabled):hover {
   word-break: break-all;
 }
 
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toast {
   position: fixed;
   left: 50%;

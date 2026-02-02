@@ -31,6 +31,11 @@ if (!file_exists($configPath)) {
 }
 $config = require $configPath;
 
+// If no explicit API key is set, default to the license key (single "customer key").
+if (empty($config['api']['api_key']) && !empty($config['license_key'])) {
+    $config['api']['api_key'] = $config['license_key'];
+}
+
 // Inicializar base de dados se configuração nova
 if (isset($config['database'])) {
     \App\Database::init($config['database']);
@@ -65,11 +70,6 @@ if (class_exists('\App\SettingsStore')) {
 $settings = $settingsStore->load();
 
 // Helper functions globais
-function sanitize(?string $value): string
-{
-    return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8');
-}
-
 function json_response(array $data, int $status = 200): void
 {
     http_response_code($status);

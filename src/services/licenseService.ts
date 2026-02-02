@@ -411,6 +411,102 @@ export class LicenseService {
     }
 
     /**
+     * Atualiza módulos (alias compatível com a rota admin)
+     */
+    static async updateModulesFlexible(licenseKey: string, modules: Partial<ModulesConfig>): Promise<License> {
+        return this.updateModules(licenseKey, modules);
+    }
+
+    /**
+     * Atualiza limites de créditos (set/add) (compatível com a rota admin)
+     */
+    static async updateLimits(
+        licenseKey: string,
+        patch: {
+            set?: Partial<{
+                ai_messages_limit: number;
+                email_limit: number;
+                sms_limit: number;
+                whatsapp_limit: number;
+                ai_calls_limit: number;
+            }>;
+            add?: Partial<{
+                ai_messages_limit: number;
+                email_limit: number;
+                sms_limit: number;
+                whatsapp_limit: number;
+                ai_calls_limit: number;
+            }>;
+        }
+    ): Promise<License> {
+        const license = await this.getLicenseByKey(licenseKey);
+        if (!license) {
+            throw new Error('Invalid license key');
+        }
+
+        const allowed = new Set([
+            'ai_messages_limit',
+            'email_limit',
+            'sms_limit',
+            'whatsapp_limit',
+            'ai_calls_limit',
+        ]);
+
+        const fields: string[] = [];
+        const params: any[] = [];
+
+        const applyDelta = (mode: 'set' | 'add', delta?: Record<string, number>) => {
+            if (!delta) return;
+            for (const [key, value] of Object.entries(delta)) {
+                if (!allowed.has(key)) continue;
+                if (typeof value !== 'number') continue;
+
+                if (mode === 'set') {
+                    fields.push(`${key} = ?`);
+                    params.push(value);
+                } else {
+                    fields.push(`${key} = ${key} + ?`);
+                    params.push(value);
+                }
+            }
+        };
+
+        applyDelta('set', patch.set as any);
+        applyDelta('add', patch.add as any);
+
+        if (fields.length === 0) {
+            throw new Error('No limit fields provided');
+        }
+
+        await pool.query(
+            `UPDATE client_licenses SET ${fields.join(', ')}, updated_at = NOW() WHERE id = ?`,
+            [...params, license.id]
+        );
+
+        return this.getLicenseById(license.id);
+    }
+
+    /**
+     * Define status (compatível com a rota admin)
+     */
+    static async setStatus(
+        licenseKey: string,
+        status: 'active' | 'suspended' | 'trial' | 'expired' | 'revoked'
+    ): Promise<License> {
+        const license = await this.getLicenseByKey(licenseKey);
+        if (!license) {
+            throw new Error('Invalid license key');
+        }
+
+        await pool.query(
+            'UPDATE client_licenses SET status = ?, updated_at = NOW() WHERE id = ?',
+            [status, license.id]
+        );
+
+        return this.getLicenseById(license.id);
+    }
+
+    /**
      * Reset usage counters (para novo ciclo de faturação)
      */
     static async resetUsageCounters(licenseId: number): Promise<void> {

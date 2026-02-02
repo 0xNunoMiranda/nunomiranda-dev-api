@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { createBadRequest } from '../errors';
+import { createBadRequest, createNotFound } from '../errors';
 import requireAdminSecret from '../middleware/adminSecret';
 import { success } from '../responses';
 import {
   createTenant,
   createTenantApiKey,
   getTenantUsageSummary,
+  listTenantApiKeys,
   listTenants,
+  revokeOtherTenantApiKeys,
   revokeTenantApiKey,
   updateTenantStatus,
 } from '../services/tenantService';
@@ -19,6 +21,8 @@ import {
   updateSubscriptionPlan,
 } from '../services/subscriptionPlanService';
 import { serializeSubscriptionPlan } from '../serializers/subscriptionPlan';
+// License management (client-facing licenses used by SiteForge installs)
+import { LicenseService, ModulesConfig } from '../services/licenseService';
 
 const router = Router();
 
@@ -41,6 +45,35 @@ const serializeTenant = (tenant: any) => ({
   metadata: tenant.metadata ? safeJsonParse(tenant.metadata) : null,
   createdAt: tenant.created_at,
   updatedAt: tenant.updated_at,
+});
+
+const serializeLicense = (license: any) => ({
+  id: license.id,
+  tenantId: license.tenant_id,
+  licenseKey: license.license_key,
+  clientName: license.client_name,
+  clientEmail: license.client_email,
+  status: license.status,
+  trialEndsAt: license.trial_ends_at,
+  billingCycleStart: license.billing_cycle_start,
+  billingCycleEnd: license.billing_cycle_end,
+  modules: license.modules,
+  limits: {
+    aiMessages: license.ai_messages_limit,
+    email: license.email_limit,
+    sms: license.sms_limit,
+    whatsapp: license.whatsapp_limit,
+    aiCalls: license.ai_calls_limit,
+  },
+  usage: {
+    aiMessages: license.ai_messages_used,
+    email: license.emails_sent,
+    sms: license.sms_sent,
+    whatsapp: license.whatsapp_sent,
+    aiCalls: license.ai_calls_used,
+  },
+  createdAt: license.created_at,
+  updatedAt: license.updated_at,
 });
 
 
@@ -91,9 +124,188 @@ router.get('/tenants/:tenantId/usage', async (req, res, next) => {
   }
 });
 
+router.get('/tenants/:tenantId/licenses', async (req, res, next) => {
+  try {
+    const tenantId = Number(req.params.tenantId);
+    if (Number.isNaN(tenantId)) {
+      throw createBadRequest('Invalid tenantId');
+    }
+
+    const includeRevoked =
+      req.query.includeRevoked === '1' || req.query.includeRevoked === 'true';
+
+    const licenses = await LicenseService.getLicensesByTenant(tenantId);
+    const filtered = includeRevoked ? licenses : licenses.filter((l) => l.status !== 'revoked');
+
+    return res.json(success({ licenses: filtered.map(serializeLicense) }));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+const licenseCreateSchema = z.object({
+  clientName: z.string().min(1),
+  clientEmail: z.string().email().optional(),
+  modules: z.record(z.any()).optional(),
+  limits: z
+    .object({
+      ai_messages_limit: z.number().int().min(0).optional(),
+      email_limit: z.number().int().min(0).optional(),
+      sms_limit: z.number().int().min(0).optional(),
+      whatsapp_limit: z.number().int().min(0).optional(),
+      ai_calls_limit: z.number().int().min(0).optional(),
+    })
+    .optional(),
+});
+
+router.post('/tenants/:tenantId/licenses', async (req, res, next) => {
+  try {
+    const tenantId = Number(req.params.tenantId);
+    if (Number.isNaN(tenantId)) {
+      throw createBadRequest('Invalid tenantId');
+    }
+
+    const body = licenseCreateSchema.parse(req.body ?? {});
+
+    const license = await LicenseService.createLicense(
+      tenantId,
+      body.clientName,
+      body.clientEmail,
+      body.modules as Partial<ModulesConfig> | undefined,
+      body.limits,
+    );
+
+    return res.status(201).json(success({ license: serializeLicense(license as any) }));
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return next(createBadRequest(error.errors[0]?.message || 'Invalid payload'));
+    }
+    return next(error);
+  }
+});
+
+router.get('/licenses/:licenseKey', async (req, res, next) => {
+  try {
+    const licenseKey = req.params.licenseKey;
+    const license = await LicenseService.getLicenseByKey(licenseKey);
+    if (!license) {
+      throw createNotFound('License not found');
+    }
+    return res.json(success({ license: serializeLicense(license as any) }));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+const limitsDeltaSchema = z
+  .object({
+    ai_messages_limit: z.number().int().min(0).optional(),
+    email_limit: z.number().int().min(0).optional(),
+    sms_limit: z.number().int().min(0).optional(),
+    whatsapp_limit: z.number().int().min(0).optional(),
+    ai_calls_limit: z.number().int().min(0).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'At least one limit field must be provided',
+  });
+
+const licenseLimitsPatchSchema = z
+  .object({
+    set: limitsDeltaSchema.optional(),
+    add: limitsDeltaSchema.optional(),
+  })
+  .refine((value) => value.set || value.add, {
+    message: 'Provide set and/or add payload',
+  });
+
+router.patch('/licenses/:licenseKey/limits', async (req, res, next) => {
+  try {
+    const licenseKey = req.params.licenseKey;
+    const body = licenseLimitsPatchSchema.parse(req.body ?? {});
+
+    const updated = await LicenseService.updateLimits(licenseKey, body);
+    return res.json(success({ license: serializeLicense(updated as any) }));
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return next(createBadRequest(error.errors[0]?.message || 'Invalid payload'));
+    }
+    return next(error);
+  }
+});
+
+const licenseModulesSchema = z.object({
+  modules: z.record(z.any()),
+});
+
+router.put('/licenses/:licenseKey/modules', async (req, res, next) => {
+  try {
+    const licenseKey = req.params.licenseKey;
+    const body = licenseModulesSchema.parse(req.body ?? {});
+
+    const updated = await LicenseService.updateModulesFlexible(
+      licenseKey,
+      body.modules as Partial<ModulesConfig>,
+    );
+
+    return res.json(success({ license: serializeLicense(updated as any) }));
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return next(createBadRequest(error.errors[0]?.message || 'Invalid payload'));
+    }
+    return next(error);
+  }
+});
+
+const licenseStatusSchema = z.object({
+  status: z.enum(['active', 'suspended', 'trial', 'expired', 'revoked']),
+});
+
+router.patch('/licenses/:licenseKey/status', async (req, res, next) => {
+  try {
+    const licenseKey = req.params.licenseKey;
+    const body = licenseStatusSchema.parse(req.body ?? {});
+
+    const updated = await LicenseService.setStatus(licenseKey, body.status);
+    return res.json(success({ license: serializeLicense(updated as any) }));
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return next(createBadRequest(error.errors[0]?.message || 'Invalid payload'));
+    }
+    return next(error);
+  }
+});
+
 const keySchema = z.object({
   label: z.string().optional(),
   scopes: z.array(z.string()).default(['requests:read', 'requests:write']),
+  revokeOthers: z.boolean().optional().default(false),
+});
+
+router.get('/tenants/:tenantId/keys', async (req, res, next) => {
+  try {
+    const tenantId = Number(req.params.tenantId);
+    if (Number.isNaN(tenantId)) {
+      throw createBadRequest('Invalid tenantId');
+    }
+
+    const includeRevoked = req.query.includeRevoked === '1' || req.query.includeRevoked === 'true';
+    const keys = await listTenantApiKeys(tenantId, { includeRevoked });
+
+    const serialized = keys.map((key: any) => ({
+      id: key.id,
+      tenantId: key.tenant_id,
+      publicId: key.public_id,
+      label: key.label,
+      scopes: key.scopes_json ? safeJsonParse(key.scopes_json) : [],
+      lastUsedAt: key.last_used_at,
+      revokedAt: key.revoked_at,
+      createdAt: key.created_at,
+    }));
+
+    return res.json(success({ keys: serialized }));
+  } catch (error) {
+    return next(error);
+  }
 });
 
 router.post('/tenants/:tenantId/keys', async (req, res, next) => {
@@ -112,6 +324,10 @@ router.post('/tenants/:tenantId/keys', async (req, res, next) => {
       salt: generated.salt,
       scopes: body.scopes,
     });
+
+    if (body.revokeOthers) {
+      await revokeOtherTenantApiKeys(tenantId, keyRow.id);
+    }
 
     return res.json(
       success({

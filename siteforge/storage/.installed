@@ -1,0 +1,10 @@
+{
+    "installed_at": "2026-02-01 03:02:06",
+    "license_key": "ntk_c0e541030984.86ff4cc89685c092f26e6fcc4443a414bdff323f42fcf42",
+    "modules": [
+        "static_site",
+        "bot_widget",
+        "bot_whatsapp",
+        "shop"
+    ]
+}

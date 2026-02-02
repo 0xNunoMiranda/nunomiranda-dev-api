@@ -12,6 +12,7 @@ import tenantRoutes from './routes/tenant';
 import catalogRoutes from './routes/catalog';
 import billingRoutes from './routes/billing';
 import clientRoutes from './routes/client';
+import whatsappRoutes from './routes/whatsapp';
 
 const app = express();
 
@@ -49,6 +50,7 @@ app.use('/requests', requestRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/catalog', catalogRoutes);
 app.use('/billing', billingRoutes);
+app.use('/whatsapp', whatsappRoutes);
 app.use('/api', clientRoutes);
 app.use('/', tenantRoutes);
 

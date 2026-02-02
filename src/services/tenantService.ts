@@ -76,6 +76,33 @@ export const revokeTenantApiKey = async (keyId: number) => {
   return rows[0];
 };
 
+export const listTenantApiKeys = async (tenantId: number, opts?: { includeRevoked?: boolean }) => {
+  const includeRevoked = opts?.includeRevoked ?? true;
+  const whereRevoked = includeRevoked ? '' : ' AND revoked_at IS NULL';
+
+  const [rows] = await pool.query<TenantApiKeyRow[]>(
+    `SELECT *
+     FROM tenant_api_keys
+     WHERE tenant_id = ?${whereRevoked}
+     ORDER BY created_at DESC
+     LIMIT 200`,
+    [tenantId],
+  );
+
+  return rows;
+};
+
+export const revokeOtherTenantApiKeys = async (tenantId: number, keepKeyId: number) => {
+  const [result] = await pool.query<ResultSetHeader>(
+    `UPDATE tenant_api_keys
+     SET revoked_at = NOW()
+     WHERE tenant_id = ? AND revoked_at IS NULL AND id <> ?`,
+    [tenantId, keepKeyId],
+  );
+
+  return result.affectedRows;
+};
+
 export const findTenantKeyByPublicId = async (publicId: string) => {
   const rows = await executeProcedure<TenantApiKeyRow>('CALL sp_lookup_api_key(?)', [publicId]);
   return rows[0];

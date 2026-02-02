@@ -3,6 +3,7 @@ const state = {
   tenants: [],
   selectedTenantId: null,
   usage: null,
+  licenses: [],
   plans: [],
 };
 
@@ -24,8 +25,9 @@ const els = {
   statusBreakdown: document.getElementById('status-breakdown'),
   rateWindows: document.getElementById('rate-windows'),
   toggleStatus: document.getElementById('toggle-status'),
-  createKeyForm: document.getElementById('create-key-form'),
-  keyResult: document.getElementById('api-key-result'),
+  createLicenseForm: document.getElementById('create-license-form'),
+  licenseResult: document.getElementById('license-key-result'),
+  licensesList: document.getElementById('licenses-list'),
   toast: document.getElementById('toast'),
   // Plans
   plansList: document.getElementById('plans-list'),
@@ -34,6 +36,7 @@ const els = {
 };
 
 let toastTimeout;
+let tenantDetailsRefreshTimer;
 
 const statusLabels = {
   active: 'Ativo',
@@ -86,10 +89,19 @@ const apiFetch = async (path, options = {}) => {
 const findTenantById = (tenantId) => state.tenants.find((tenant) => tenant.id === tenantId);
 
 const setSelectedTenant = (tenantId) => {
+  clearInterval(tenantDetailsRefreshTimer);
   state.selectedTenantId = tenantId;
   state.usage = null;
+  state.licenses = [];
   renderTenantList();
   renderUsage();
+  renderLicenses();
+
+  if (tenantId) {
+    tenantDetailsRefreshTimer = setInterval(() => {
+      loadTenantDetails(tenantId);
+    }, 15000);
+  }
 };
 
 const loadTenants = async () => {
@@ -123,6 +135,21 @@ const loadUsage = async (tenantId) => {
   }
 };
 
+const loadTenantLicenses = async (tenantId) => {
+  if (!tenantId) return;
+  try {
+    const { data } = await apiFetch(`/admin/tenants/${tenantId}/licenses?includeRevoked=1`);
+    state.licenses = data?.licenses || [];
+    renderLicenses();
+  } catch (error) {
+    showToast(error.message, 'error');
+  }
+};
+
+const loadTenantDetails = async (tenantId) => {
+  await Promise.all([loadUsage(tenantId), loadTenantLicenses(tenantId)]);
+};
+
 const renderTenantCard = (tenant) => {
   const container = document.createElement('article');
   container.className = 'tenant-card';
@@ -152,7 +179,7 @@ const renderTenantCard = (tenant) => {
   selectBtn.textContent = 'Ver consumo';
   selectBtn.addEventListener('click', () => {
     setSelectedTenant(tenant.id);
-    loadUsage(tenant.id);
+    loadTenantDetails(tenant.id);
   });
 
   container.appendChild(badge);
@@ -220,6 +247,94 @@ const renderRateWindows = (windows = []) => {
   });
 
   return fragment;
+};
+
+const renderLicenses = () => {
+  if (!els.licensesList) return;
+  els.licensesList.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'table-row header';
+  header.style.gridTemplateColumns = '1fr 0.8fr 1.6fr 0.9fr';
+  header.innerHTML = '<span>Chave</span><span>Status</span><span>Aditivos (usados/limite)</span><span>Ações</span>';
+  els.licensesList.appendChild(header);
+
+  if (!state.licenses.length) {
+    const row = document.createElement('div');
+    row.className = 'table-row';
+    row.style.gridTemplateColumns = '1fr';
+    row.textContent = 'Sem licenças. Gera uma acima para usar no setup.php.';
+    els.licensesList.appendChild(row);
+    return;
+  }
+
+  state.licenses.forEach((license) => {
+    const row = document.createElement('div');
+    row.className = 'table-row';
+    row.style.gridTemplateColumns = '1fr 0.8fr 1.6fr 0.9fr';
+
+    const keyEl = document.createElement('span');
+    keyEl.title = license.licenseKey;
+    keyEl.className = 'truncate';
+    keyEl.textContent = license.licenseKey;
+
+    const statusEl = document.createElement('span');
+    statusEl.textContent = statusLabels[license.status] || license.status;
+
+    const usageEl = document.createElement('span');
+    const u = license.usage || {};
+    const l = license.limits || {};
+    usageEl.textContent =
+      `AI ${u.aiMessages ?? 0}/${l.aiMessages ?? 0} · ` +
+      `Email ${u.email ?? 0}/${l.email ?? 0} · ` +
+      `SMS ${u.sms ?? 0}/${l.sms ?? 0} · ` +
+      `WA ${u.whatsapp ?? 0}/${l.whatsapp ?? 0} · ` +
+      `Calls ${u.aiCalls ?? 0}/${l.aiCalls ?? 0}`;
+
+    const actions = document.createElement('span');
+    actions.style.display = 'flex';
+    actions.style.gap = '0.5rem';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = 'Copiar';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(license.licenseKey);
+        showToast('Chave copiada.');
+      } catch (error) {
+        showToast('Não foi possível copiar automaticamente.', 'warn');
+      }
+    });
+    actions.appendChild(copyBtn);
+
+    if (license.status !== 'revoked') {
+      const revokeBtn = document.createElement('button');
+      revokeBtn.type = 'button';
+      revokeBtn.className = 'danger';
+      revokeBtn.textContent = 'Revogar';
+      revokeBtn.addEventListener('click', async () => {
+        if (!confirm('Revogar esta licença?')) return;
+        try {
+          await apiFetch(`/admin/licenses/${encodeURIComponent(license.licenseKey)}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: 'revoked' }),
+          });
+          showToast('Licença revogada.');
+          loadTenantLicenses(state.selectedTenantId);
+        } catch (error) {
+          showToast(error.message, 'error');
+        }
+      });
+      actions.appendChild(revokeBtn);
+    }
+
+    row.appendChild(keyEl);
+    row.appendChild(statusEl);
+    row.appendChild(usageEl);
+    row.appendChild(actions);
+    els.licensesList.appendChild(row);
+  });
 };
 
 const updateStatusButton = () => {
@@ -342,7 +457,7 @@ els.toggleStatus.addEventListener('click', async () => {
   }
 });
 
-els.createKeyForm.addEventListener('submit', async (event) => {
+if (els.createKeyForm) els.createKeyForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const tenant = findTenantById(state.selectedTenantId);
   if (!tenant) {
@@ -361,6 +476,7 @@ els.createKeyForm.addEventListener('submit', async (event) => {
       body: JSON.stringify({
         label: formData.get('label')?.toString().trim() || undefined,
         scopes,
+        revokeOthers: formData.get('revokeOthers') === 'on',
       }),
     });
     if (data?.apiKey) {
@@ -368,6 +484,7 @@ els.createKeyForm.addEventListener('submit', async (event) => {
       els.keyResult.textContent = `Nova chave: ${data.apiKey}`;
       showToast('Chave gerada. Guarda-a em segurança.');
       event.currentTarget.reset();
+      loadTenantKeys(tenant.id);
     }
   } catch (error) {
     showToast(error.message, 'error');
@@ -377,6 +494,39 @@ els.createKeyForm.addEventListener('submit', async (event) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // SUBSCRIPTION PLANS
 // ─────────────────────────────────────────────────────────────────────────────
+
+if (els.createLicenseForm) {
+  els.createLicenseForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const tenant = findTenantById(state.selectedTenantId);
+    if (!tenant) {
+      showToast('Seleciona um cliente primeiro.', 'warn');
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const payload = {
+      clientName: formData.get('clientName')?.toString().trim(),
+      clientEmail: formData.get('clientEmail')?.toString().trim() || undefined,
+    };
+
+    try {
+      const { data } = await apiFetch(`/admin/tenants/${tenant.id}/licenses`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (data?.license?.licenseKey) {
+        els.licenseResult.hidden = false;
+        els.licenseResult.textContent = data.license.licenseKey;
+        showToast('Licença gerada. As anteriores foram revogadas.');
+        event.currentTarget.reset();
+        loadTenantLicenses(tenant.id);
+      }
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  });
+}
 
 const loadPlans = async () => {
   if (!state.secret) return;

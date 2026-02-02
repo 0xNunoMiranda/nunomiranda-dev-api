@@ -112,19 +112,24 @@
             </div>
 
             <section class="stack">
-              <h4>Gerar nova chave API</h4>
-              <form id="create-key-form" class="inline-form" autocomplete="off">
+              <h4>Chave do cliente (API + setup.php)</h4>
+              <p class="muted">Usa esta chave no <code>setup.php</code> e também como <code>Bearer</code> para consumir a API.</p>
+              <form id="create-license-form" class="inline-form" autocomplete="off">
                 <label>
-                  Label
-                  <input name="label" type="text" placeholder="Backoffice" />
+                  Nome do cliente
+                  <input name="clientName" type="text" minlength="1" required placeholder="Empresa XYZ" />
                 </label>
                 <label>
-                  Scopes (separados por vírgulas)
-                  <input name="scopes" type="text" placeholder="requests:read,requests:write" />
+                  Email (opcional)
+                  <input name="clientEmail" type="email" placeholder="cliente@empresa.com" />
                 </label>
-                <button type="submit">Gerar</button>
+                <button type="submit">Gerar licença (revoga anteriores)</button>
               </form>
-              <p id="api-key-result" class="key-result" hidden></p>
+              <p id="license-key-result" class="key-result" hidden></p>
+              <div class="stack">
+                <h4>Licenças</h4>
+                <div id="licenses-list" class="table-like"></div>
+              </div>
             </section>
           </div>
         </section>
